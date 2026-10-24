@@ -76,3 +76,26 @@ X2WOTCCommunityHighlander, pushed 2026-10-12) cloned for reference.
 - Does SendHistory work while in the strategy layer (Avenger), and does the client's
   visual state (Avenger, Geoscape) refresh after receiving it?
 - Where test runs write config/logs (likely %USERPROFILE%\Documents\My Games\...).
+
+## Session 1 (cont.) — running test instances
+
+### Observed
+- Owner's install had a corrupt `XComGame/CookedPCConsole/TacticalResources_SF.upk`
+  (crash at shell load: "Texture2D AdventDeskA.Textures.AdventComputerA_MSK: Serial size
+  mismatch: Got 1588, Expected 1956"). Steam "Verify integrity" replaced it (6.7 MB);
+  the shell menu then loads. Lesson: verify integrity BEFORE copying a test install.
+- `-nohomedir` (string present in exe) makes the game write Config/Logs/SaveData into
+  `<install>/XComGame/...` instead of `%USERPROFILE%\Documents\My Games\...`
+  (generated XCom*.ini appear in `<install>/XComGame/Config`). Keeps tests away from
+  the owner's Steam Cloud folder.
+- Second instance exits with code 1 before writing a log while the first one runs.
+  Cause: mutex `\Sessions\<n>\BaseNamedObjects\UnrealEngine3_<n>` (created via
+  `CreateMutexW("UnrealEngine3_%d%s")`). Closing that handle inside instance A
+  (DuplicateHandle with DUPLICATE_CLOSE_SOURCE, same user, no admin) lets B start;
+  both log "STEAMWORKS initialized 1". Closing `CDdf212806D6EmB31yE0c` and
+  `{52813408-...}_0` did not help (not the guard).
+- Second install = hard-link clone of the first, but with its own copy of
+  `XComGame/Config` (the game rewrites inis there).
+- Tools: `tools/launch_pair.ps1`, `close_remote_handle.py`, `hardlink_clone.py`,
+  `re_callers.py`, `re_dis.py`, `trace_start.py` (in the owner's workspace, to be moved
+  into the game repo).

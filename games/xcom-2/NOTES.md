@@ -99,3 +99,44 @@ X2WOTCCommunityHighlander, pushed 2026-10-12) cloned for reference.
 - Tools: `tools/launch_pair.ps1`, `close_remote_handle.py`, `hardlink_clone.py`,
   `re_callers.py`, `re_dis.py`, `trace_start.py` (in the owner's workspace, to be moved
   into the game repo).
+
+## Session 1 (cont.) — first network experiments (two instances, one PC)
+
+Mod repo: `WOTCCoopCampaign` (owner's workspace; to be published as its own repo).
+Test bot: `CoopHarness` (Actor, steps from `XComCoopHarness.ini`, progress kept on the
+class default object across map loads) + `CoopHarnessNet` (Object holding network
+delegates). Runner: `tools/run_pair_test.ps1` (activates the mod through the test installs'
+`DefaultModOptions.ini`; the game regenerates `XComModOptions.ini` from it).
+
+### Observed
+1. `XComGameStateNetworkManager.CreateClient` with a dotted host does not send a single
+   packet (UDP sniffer on the target port: 0 packets; B log shows the peer as
+   `0.0.0.127`). With the host as ONE decimal integer (127.0.0.1 -> "2130706433") the
+   client sends at once (95 packets in 30 s). Applies to `IpNetDriverSteamworks` IP mode.
+2. Client and server on one PC must not share the port: the client logs
+   "Game client on port 7777" (URL default port). Server on 7778 works.
+3. `HasConnections()` is already true while a server only listens; use the
+   `PlayerJoined` / `NotifyAcceptedConnection` delegates to detect a real peer.
+4. Delegates on the network manager must not point at an Actor: the manager outlives
+   maps, the old World is kept alive and the next map load asserts
+   ("World XPACK_Shell_Intro.TheWorld not cleaned up by garbage collection!",
+   UnGame.cpp:3107, referencer `XComGameStateNetworkManager...ReceiveHistoryDelegates`).
+5. Two-way remote commands work (CoopPing/CoopPong both directions).
+6. **Strategy history transfer works**: A starts a campaign (cheat start, 225 frames,
+   22 soldiers, 4000 supplies), `MPSendHistory`; B in the main menu receives
+   `ReceiveHistory frames=225` with the same first soldier (ObjectID 411) and supplies,
+   then `open Avenger_Root?game=XComGame.XComHeadQuartersGame` loads A's campaign on B.
+   The connection survives the map travel (ping/pong after the load).
+7. After loading the Avenger, B's history grows by 7 local frames (225 -> 232) that A
+   does not have: map-load side effects create game states locally.
+
+### Derived
+- Join flow for the shared campaign: host loads save -> client connects -> host sends
+  full history -> client opens the Avenger. Proven end to end in the harness.
+- Frames created locally on load (item 7) must either be suppressed on the client or
+  the client must accept being overwritten by the host's next partial history.
+
+### Unknown / next
+- Steam transport (`steamsockets`) between two different Steam accounts.
+- Does SendPartialHistory (delta) apply on top of the client's 7 extra frames?
+- How the Avenger/Geoscape visuals refresh when history changes under a loaded map.

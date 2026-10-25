@@ -704,3 +704,66 @@ Full suite with the new FlushBatch and `@verchain` in baton-objects (no "bad=" a
 
 Bench note: running `bash tools/build_mod.sh` from a PowerShell background job did not build
 (no error shown); build from Git Bash and check the `.u` timestamp.
+
+## Session 3 (cont.) — projects finishing on the partner's Geoscape
+
+Harness: `@construct N Template` (XComHQ.AddFacilityProject, what UIChooseFacility does on
+confirm: build time and cost), `@dismiss` (closes popups down to the Geoscape / Avenger base
+screens), `@geoscape` now only enters when the map is not open; `@time` lists every HQ project
+(class, focus, completion date, points) and the project / tech / facility counts; `@rooms`
+marks a room under construction.
+
+### Observed
+1. Test "projects": A (host, baton) clears room 3, starts a Laboratory (done in 20 days) and
+   AlienBiotech research (4.5 days), then grants the baton. B enters the Geoscape and scans.
+   - The project objects, the room's build state and the cost reach B (room 3 swap
+     AVG_ER_A -> AVG_ER_BuildState_A on B; supplies 4000 -> 3850 on both).
+   - The research completed on B during the scan; A received it (techs 21, project removed),
+     "in sync".
+2. First run: the facility never completed (time passed its date by a month, points
+   unchanged). Cause: the test's `@close` closed B's Geoscape screen, then its HUD; time still
+   advanced through the Geoscape actor. XComGameState_HeadquartersXCom checks projects only
+   while `Pres.StrategyMap2D != none`, not in flight and with no UIAlert on the stack.
+3. With `@dismiss` and 12 scan rounds (third run): the Laboratory completed on B between
+   2035-3-23 and 3-28 (its date was 3-21; until then a UIAlert or the alien facility mission
+   screen was open at almost every check). A swapped room 3 AVG_ER_BuildState_A ->
+   AVG_Laboratory_A; both end with projects=0 techs=21 facilities=19 and equal fingerprints,
+   35 "in sync", no DESYNC.
+4. Popups (research done, facility done, alien facility mission, other alerts) appear only on
+   the player holding the Geoscape; the partner sees the result through the merges.
+5. During a scan the history clock (XComGameState_GameTime) lags the ruleset / Geoscape clock
+   and catches up at events and on pause; the partner's clock follows the history copy.
+
+### Derived
+- Projects started by one player complete on the other's Geoscape; the result and the room
+  swap reach the starter. No mod change needed for this.
+
+### Unknown
+- Whether a facility completes two days late in single player too when popups are left open
+  (not compared).
+- The partner gets no popup for events that happened on the other side (design question:
+  show a summary?).
+
+## Session 3 (cont.) — a lost merge, one merge in flight
+
+### Observed
+1. Suite 2026-10-25 21:51: 7/10. `projects` failed with DESYNC on A: B sent two batches 0.23 s
+   apart (B log 219.49 and 219.72); A handled both "CoopAlign" commands (frames 281 and 283)
+   but got ONE merge callback; the first batch (1 object) was lost. A's queue of "CoopFrame"
+   fingerprints was then one behind, so every later comparison said DESYNC. The final
+   fingerprints matched only because the lost object was overwritten later.
+2. `edit-gate` and `panel-replies` failed on timing: after the mirror map load B had a loading
+   movie (12-15 s) and GPU stalls ("Timed out while waiting for GPU"); its step due 15 s later
+   ran 46-57 s later, so the two instances' steps came in the wrong order. The mod behaved
+   correctly for the order that happened.
+
+### Fix
+- CoopSession: one merge state in flight. The receiver answers every merge with
+  "CoopMergeAck"; frames made meanwhile wait in the next batch; a merge without an ack after
+  5 s is sent again (its objects re-added). The fingerprint travels in "CoopAlign" and is
+  compared once after the next merge ("CoopFrame" and its queue are gone), so one lost merge
+  cannot shift later checks.
+- Harness: `@waitnobaton`, `@waitgrantreq`; `edit-gate` and `panel-replies` wait on these
+  conditions (A holds the Geoscape until B's request is deferred) instead of fixed delays.
+- Suite 2026-10-25 22:33: 10/10 PASS (with the new `projects` scenario). No "not acknowledged"
+  resend in the last scenario's logs (the other scenarios' logs were overwritten; unknown).

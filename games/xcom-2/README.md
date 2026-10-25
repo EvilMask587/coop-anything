@@ -84,16 +84,21 @@ Mod: https://github.com/EvilMask587/xcom2-wotc-coop-campaign (code only, no game
   step list per instance; `tools/test_suite.ps1` in the mod repo asserts on both logs:
   expected lines, no DESYNC / crash / duplicate crew IDs / stale rooms / bot timeouts, and
   equal final fingerprints on both players.
-- Scenarios: `baton-objects` (resources and units both ways, grant right after a frame),
-  `facility` (facility removed and rebuilt, room swaps on the client), `blocked-without-baton`,
-  `edit-gate` (deferred requests while an edit screen is open, both directions),
-  `panel-replies` (HUD button, deferred / not-mine replies, Cancel).
-- Last suite result: 5/5 passed (2026-10-25, `tools/test_suite.ps1`: baton-objects, facility,
-  blocked-without-baton, edit-gate, panel-replies), one PC, two instances, 127.0.0.1.
+- Scenarios: `baton-objects` (resources and units both ways, grant right after a frame,
+  version chains checked), `facility` (facility removed and rebuilt, room swaps on the
+  client), `blocked-without-baton`, `edit-gate` (deferred requests while an edit screen is
+  open, both directions), `clock` (Geoscape time), `burst` (many frames in one tick),
+  `client-save` and `client-save-menu` (only the host saves), `panel-replies` (HUD button,
+  deferred / not-mine replies, Cancel).
+- Last suite result: 9/9 passed (2026-10-25, `tools/test_suite.ps1`), one PC, two
+  instances, 127.0.0.1.
+- A host save made after receiving the client's merges loads back the same campaign
+  (fingerprint and crew equal; Geoscape time runs; saving again works), checked by hand
+  with the bot's `@save` / `@load N` (2026-10-25).
 - Screenshots (taken by the bot) were checked by eye for room swaps, the wait dialog and the
   HUD panel.
-- Not tested: two PCs, Steam networking, long sessions, real research/build projects with
-  time passing, anything tactical.
+- Not tested: two PCs, Steam networking, long sessions, real research/build projects
+  finishing while the partner holds the Geoscape, client rejoin, anything tactical.
 
 ## How to play
 
@@ -110,7 +115,7 @@ Not playable yet. Developers: build and test instructions in the mod repo README
 
 - Two PCs and Steam sockets.
 - Real projects with time passing (construction sets `UpdateRoomMap`; who runs the clock).
-- Saving: only the host should save; the client needs the host's save to rejoin.
+- Client rejoin: the client drops and reconnects; the host sends the history again.
 - Tactical: keep one XCom player and split its turn into sub-phases per player, with the
   sub-phase owner as authority and `SendPartialHistory` at each handoff (the PvP model).
 - Squad select: each player picks soldiers; locks per soldier.

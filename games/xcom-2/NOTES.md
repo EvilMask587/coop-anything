@@ -656,3 +656,51 @@ and discarded, like FlushBatch, no network).
 - Not known: what a lookup returns when the named frame holds no version of the object (one
   observation: GetPreviousVersion gave none), and whether saves written after merges load
   back the same campaign (to test).
+
+## Session 3 — host saves after merges, and version chains
+
+Harness: `@save` (new slot, logs its number), `@load N` (by save ID, like UILoadGame),
+`@verchain` (follows GetPreviousVersion from the current version of the HQ and every crew
+member and counts the frames that hold a version; "short" = the chain ends early, "bad" = a
+link that does not go back in time), `@localburst N` (frames that are not batched),
+`@sendvar K` (four ways of sending the HQ as a merge state).
+
+### Observed
+1. Pair run: B (client) took the baton and sent two batches (Engineer + 9 alloys, then 10
+   frames); A (host) was "in sync" after each and saved to slot 61 (`save done ok=true`).
+2. One instance, load slot 61: fingerprint after loading = the one at save time
+   (sup4010, all1009, crew27#2321), crew equal (the client's Scientist 2320 and Engineer
+   2321 present, duplicateIDs=0). Frames 242 -> 250 after loading. Then Geoscape, scan
+   (clock to 2035-3-6, history = ruleset = Geoscape), 3 frames, save to slot 62: ok, no crash.
+3. `@verchain`: without network (new campaign, bursts, pending states created and discarded)
+   every chain is complete (176/176, 181/181). Over the network the HQ chain was cut on BOTH
+   sides, also on the sender, right after the sender's own batch went out (A: 176/176 before
+   its send, HQ chain=1 after it, ending at its own last local frame).
+4. `@sendvar` on the host (each followed by one unsent local frame and `@verchain`):
+   pending state discarded without sending: chain intact; pending state sent and not
+   discarded: cut; pending state sent and discarded (FlushBatch): cut; a submitted frame
+   sent with SendMergeGameState: intact.
+5. In that experiment no "CoopAlign" was sent; B then crashed in `@verchain` at the known
+   address (XCom2.exe+0x4ce235, null+0xe0): a link past the end of its history.
+6. Fix: FlushBatch submits the batch as its own frame ("Coop batch", not batched again) and
+   sends that frame; "CoopAlign" carries its index, so the merge lands in the same frame
+   number on the receiver. Rerun: sender chains complete after every send (A 179/179; B's
+   own versions chain back across its batches, 4 then 7 links); the chain now ends only at a
+   version received from the partner (it names a padding frame "Coop: align history" with no
+   version of the object). `@walkback 20` answered, host save after merges ok (slot 63).
+
+### Derived
+- SendMergeGameState of a state that is not in the history clears the previous-version link
+  of the newest history version of each object in it, on the sender. Native; avoided.
+- A received version's previous-version lookup returns none (no crash) when the named frame
+  holds no version; saves keep that and load back the same campaign.
+
+### Unknown
+- Whether game code needs the previous version of a received object (e.g. code comparing old
+  and new state after a merge). Script that dereferences none logs "Accessed None"; not seen yet.
+
+Full suite with the new FlushBatch and `@verchain` in baton-objects (no "bad=" allowed):
+9/9 PASS on 2026-10-25 20:43.
+
+Bench note: running `bash tools/build_mod.sh` from a PowerShell background job did not build
+(no error shown); build from Git Bash and check the `.u` timestamp.

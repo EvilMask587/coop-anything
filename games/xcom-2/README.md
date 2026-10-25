@@ -88,17 +88,19 @@ Mod: https://github.com/EvilMask587/xcom2-wotc-coop-campaign (code only, no game
   version chains checked), `facility` (facility removed and rebuilt, room swaps on the
   client), `blocked-without-baton`, `edit-gate` (deferred requests while an edit screen is
   open, both directions), `clock` (Geoscape time), `projects` (research and construction
-  started by one player finish on the other's Geoscape), `burst` (many frames in one tick),
+  started by one player finish on the other's Geoscape), `rejoin` (the client's process is
+  killed while it holds the baton, it reconnects and gets the history again), `burst` (many
+  frames in one tick),
   `client-save` and `client-save-menu` (only the host saves), `panel-replies` (HUD button,
   deferred / not-mine replies, Cancel).
-- Last suite result: 10/10 passed (2026-10-25, `tools/test_suite.ps1`), one PC, two
+- Last suite result: 11/11 passed (2026-10-25, `tools/test_suite.ps1`), one PC, two
   instances, 127.0.0.1.
 - A host save made after receiving the client's merges loads back the same campaign
   (fingerprint and crew equal; Geoscape time runs; saving again works), checked by hand
   with the bot's `@save` / `@load N` (2026-10-25).
 - Screenshots (taken by the bot) were checked by eye for room swaps, the wait dialog and the
   HUD panel.
-- Not tested: two PCs, Steam networking, long sessions, client rejoin, anything tactical.
+- Not tested: two PCs, Steam networking, long sessions, the host dropping, anything tactical.
 
 ## How to play
 
@@ -116,7 +118,8 @@ Not playable yet. Developers: build and test instructions in the mod repo README
 ## Next steps
 
 - Two PCs and Steam sockets.
-- Client rejoin: the client drops and reconnects; the host sends the history again.
+- Join flow for real play: the host sends the history when a client joins (now the test bot
+  does it), a menu entry to host / join.
 - Tactical: keep one XCom player and split its turn into sub-phases per player, with the
   sub-phase owner as authority and `SendPartialHistory` at each handoff (the PvP model).
 - Squad select: each player picks soldiers; locks per soldier.

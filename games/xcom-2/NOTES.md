@@ -767,3 +767,37 @@ marks a room under construction.
   conditions (A holds the Geoscape until B's request is deferred) instead of fixed delays.
 - Suite 2026-10-25 22:33: 10/10 PASS (with the new `projects` scenario). No "not acknowledged"
   resend in the last scenario's logs (the other scenarios' logs were overwritten; unknown).
+
+## Session 3 (cont.) — client drops and rejoins
+
+Tools: mod repo `tools/run_rejoin_test.ps1` (A and B start as usual; when B logs "done" its
+process is killed, no clean disconnect; then a new B process starts alone with other steps:
+A no longer holds the single-instance mutex). Harness: `@waitjoins N` (N-th PlayerJoined),
+`@waitclosed N` (N-th ConnectionClosed). The suite runs a scenario with `B2` steps this way.
+
+### Observed
+1. Test "rejoin-explore" (before the fix): A granted the baton, B made an Engineer (merged,
+   "in sync") and was killed holding the baton. A logged ConnectionClosed about 3 s later.
+   A then had no baton (panel "partner has control"); nobody could change the campaign.
+2. The new B process connected, A sent the history again (`MPSendHistory`), B entered the
+   Avenger as mirror with 234 frames: the Engineer it made before dying was there, crew
+   equal, duplicateIDs=0.
+3. A's change after the rejoin (+5 supplies) was "local frame without baton" and never
+   sent: A ended with 4005 supplies, B with 4000.
+4. Fix: CoopSession.OnConnectionClosed drops everything in flight (grant pending, merge in
+   flight, batch) and the host takes the baton back. The side that entered the campaign as
+   mirror (`bMirrorClient`, set by CoopHeadquartersGame) is the client: it only logs that
+   the host left and holds no baton.
+5. Test "rejoin-1" / suite "rejoin": A logs "connection closed: the partner left; the host
+   takes the baton back (had it: no)", panel "you have control"; after B's return A's +5
+   supplies reaches B ("in sync"); A grants (epoch 2) to the new B process, B's +3 alloys
+   reaches A ("in sync"); both end with 236 frames, equal fingerprints, duplicateIDs=0,
+   verchain bad=0.
+
+### Unknown
+- The host dying while the client plays (only the log line exists on the client).
+- Joining is still driven by the test bot (host `MPSendHistory`, client `@mirror`); real play
+  needs a join flow (the host sends the history when a client joins, a menu entry).
+- Frames the client made after its last batch and before dying are lost (by design: the
+  host's history is the campaign).
+- Full suite with `rejoin` 2026-10-25 23:35: 11/11 PASS.

@@ -458,3 +458,201 @@ assertions on both logs (expected lines; no DESYNC, crash, duplicate crew ID, st
 bot timeout; equal final fingerprints). First run: false FAIL, the forbidden word "STALE"
 matched the engine's "MaxStaleCacheSize" (Select-String is case-insensitive by default);
 now case-sensitive "STALE loaded=". Second run 2026-10-25: 5/5 passed.
+
+## Session 2 — 2026-10-25: Geoscape clock, lost frames, batching
+
+Harness: `@time` (clock in history / X2StrategyGameRuleset.GameTime / XGGeoscape.m_kDateTime,
+research projects' completion dates), `@research <TechTemplate>` (XComHQ.SetNewResearchProject,
+what UIChooseResearch does), `@geoscape`, `@scan` (XGGeoscape.FastForward), `@pause`,
+`@burst N` (N frames in one tick, +1 supply each).
+
+### Observed
+1. The strategy clock lives in memory (`STRATEGYRULES.GameTime`, `XGGeoscape.m_kDateTime`);
+   the history copy (`XComGameState_GameTime.CurrentTime`) is written by `XGGeoscape.Pause`
+   ("Geoscape Pause") and some other frames.
+2. Test "clock": A researched AlienBiotech and scanned 20 s (3-1 -> 3-5, research completed).
+   B's history got 3-5, B's memory clock stayed at its join time (3-1). B took the baton,
+   entered the Geoscape: its clock ran from 3-1; after a scan and pause (3-3) the merge state
+   moved A's HISTORY clock back from 3-5 to 3-3. Fingerprints said "in sync" (no time in them).
+3. Fix: on a received merge state with a GameTime object, copy it into the memory clock and
+   `XComEarth.SetTime` (`CoopSession.ApplyClock`); before a grant the holder writes its memory
+   clock into the history if it differs (`CommitClock`); the fingerprint starts with the history
+   clock to the hour. Test "clock-2": B's memory clock followed to 3-5, B continued 3-5 -> 3-7,
+   A received 3-7; both end with equal fingerprints including the hour.
+4. Test "burst-2" (one frame per SendMergeGameState): B sent 10 + 20 frames in two ticks, A got
+   3 merge callbacks; A ended with 4021 supplies, B with 4030. Frames were lost in the network
+   layer (the sender logged all 30 "Wrote new game state frame to network queue"). The grant
+   check refused the baton (fingerprints differed): no silent corruption, but a deadlock.
+   (First "burst" run: 6 bursts up to 20 each way arrived late but complete; loss is not
+   deterministic.)
+5. Fix: batching. OnNewGameState only records the ObjectIDs a frame touched; 0.2 s later
+   (`CoopFlushTimer`, and right before a grant) one merge state is built with
+   ModifyStateObject (or RemoveStateObject) of each touched object's newest version, sent,
+   and discarded with CleanupPendingGameState (never submitted); one CoopFrame fingerprint per
+   batch, compared in order on the receiver (one merge callback per batch). Test "burst-3":
+   bursts of 10/20/50 both ways -> 6 batches, both sides 4160 supplies, all "in sync".
+6. Client crash again (test "clock", B 2 s after leaving the Geoscape as holder, 3 "Geoscape
+   Pause" frames in one tick): Launch.log has a native stack; crash at XCom2.exe+0x4ce235 reading
+   null+0xe0, in a worker thread whose task function references the string
+   "FWriteHistoryObjects" (serialising history objects). With the earlier crash (also right
+   after a client-side burst) this points at a race in the network layer's background
+   serialisation of merge states. Bursts of up to 20 unbatched frames (test "burst") and 50
+   batched ("burst-3") did not crash; not reproduced on demand. Batching sends far fewer merge states, which should also
+   make this race rarer; unverified.
+
+### Unknown / next
+- Whether batching removes the crash (watch the suite and longer runs).
+- Merge states built from copies: tested for HQ resources, research, facilities (suite); not for
+  every object type.
+
+## Session 2 (cont.) — the client crash: client sends while it saves
+
+Harness: `@autosave` (XComAutosaveMgr.DoAutosave, what BaseRoomView.BeginState does when the
+camera goes from the Geoscape back to the Avenger).
+
+### Observed
+1. Suite run with "clock": B crashed again at the same address as before (XCom2.exe+0x4ce235,
+   reading null+0xe0, worker thread, task "FWriteHistoryObjects"), 1.4 s after leaving the
+   Geoscape, with no merge state sent in between. Leaving the Geoscape autosaves.
+2. Test "autosave": B without the baton autosaved 10 times (frames local only): no crash.
+3. Test "autosave-burst": B with the baton, `@autosave` then `@burst 5` 0.05 s later: crash on
+   the first autosave (the burst went out as a batch while the save ran).
+4. Test "autosave-burst-2": A (host, baton) autosave + burst + batch 6 times: no crash.
+   B without the baton autosave + local bursts 6 times: no crash.
+5. Test "client-send-then-save": B takes the baton and autosaves: crash on the first save (the
+   frames the save itself creates are batched and sent 0.2 s later, during the save).
+6. Fix: `CoopAutosaveMgr` (ModClassOverrides of XComAutosaveMgr): no autosave / quicksave on the
+   co-op client (`HasClientConnection`); FlushBatch waits while `XComOnlineEventMgr.SaveInProgress()`
+   and a grant waits for the save too. Test "client-send-then-save-2": 6 client autosaves
+   skipped, host saved while sending, no crash, equal final state.
+
+### Derived
+- Crash condition: the CLIENT sends a merge state while it is saving. Native, not fixable from
+  script; avoided. Only the host saves the shared campaign (it was the plan anyway).
+
+### Unknown
+- The exact native cause (why the client and not the host).
+- The save menu on the client (manual "Save game" screen) is not blocked yet.
+
+## Session 2 (cont.) — the writer task, and a host crash
+
+Tools (workspace): `re_xrefs.py` (vtable / lea references to a function), `re_calls.py`
+(direct callers + their strings). Harness: `@netwatch S` (logs the network manager's
+OutGameData/InGameData queues when they change), `@pendingstress N` (N pending states created
+and discarded, like FlushBatch, no network).
+
+### Observed
+1. Suite (8 scenarios) 2026-10-25 01:58: 7/8; `clock` and the new `client-save` passed; in
+   `baton-objects` the HOST crashed for the first time, same address (XCom2.exe+0x4ce235,
+   null+0xe0), 0.01 s after receiving a merge state and 2.1 s after its own last batch + grant.
+   It was not saving (its last autosave belonged to the previous scenario).
+2. Disassembly: 0x4ce230 is a TMap lookup by ObjectID; the caller (0xcb6930) passes
+   `frame + 0x9c` where `frame` comes from the history's frame array, and that frame pointer
+   was null (fault at 0x9c + 0x44 = 0xe0). The worker reads a history frame slot that is empty.
+3. The task "FWriteHistoryObjects" (vtable 0x14175c440) is created by: the save routine
+   (0xbbc340, strings "Save0", "open Avenger_Root..."), challenge-mode post-game save, and
+   0xce2c60, which is called by UXComGameStateNetworkManager::SendGameState and (through
+   0xce2db0) SendMergeGameState and SendValidateGameState. Receiving does not create it
+   (no native caller found).
+4. `@netwatch`: OutGameData/InGameData were always empty when sampled every 0.05 s.
+5. Test "pending-stress" (one instance, no network): 10 autosaves each followed by 20 pending
+   states created and discarded: no crash.
+6. Test "send-race": 30 batches per side, each followed 0.22 s later by 30 local frames while
+   the send task may still run: no crash, all "in sync", both end at 4990 supplies.
+
+### Derived
+- Client crashes that involved a save are covered by CoopAutosaveMgr (5 of 6 crashes so far
+  happened on the client right after or during a save).
+- The host crash stays unexplained: one occurrence in about 45 scenario runs. A send task
+  reading a history frame slot while it is empty is the best description; what empties it is
+  unknown (candidates: merge states written into the current frame on the receiver, the
+  batch's discarded pending state).
+
+### Next
+- Measure the frequency (repeat the suite) before more reverse engineering.
+
+## Session 2 (cont.) — manual saves on the client
+
+### Observed
+- UIPauseMenu builds its Save item in InitScreen (index `m_optSave`, -1 when saving is not
+  allowed); OnChildClicked opens the save screen through `Movie.Pres.UISaveScreen()` without
+  checking whether the list item is disabled (the tutorial case re-checks it by hand).
+- New listener CoopSaveGate: on the co-op client it disables the Save item with the reason
+  "In co-op only the host saves the campaign" and closes UISaveGame if it opens anyway.
+- Test "client-save-menu": B (client) logs "pause menu: save disabled on co-op client", then
+  `@savescreen` (the menu item's call) logs "save screen closed" and the stack is back to
+  UIPauseMenu; A (host) opens its pause menu with Save untouched. PASS on 2026-10-25.
+
+## Session 2 (cont.) — repeated suite runs
+
+### Observed
+- Full suite (9 scenarios) three times in a row on 2026-10-25: 7/9, 9/9, 8/9.
+- Host crash "FWriteHistoryObjects" (XCom2.exe+0x4ce235 reading null+0xe0) once more, again in
+  `baton-objects` (round 1). Both host crashes so far happened in that scenario.
+- Two other failures (`clock` round 1, `client-save` round 3) were a test-bench fault: the
+  host's Launch.log stopped at 0.51 s ("Loading value for StaleCacheDays"), before any mod
+  code ran; the client waited for the history, timed out and hit an UnAsyncLoading.cpp
+  assertion while being stopped. 2 of 27 pair launches.
+- run_pair_test.ps1 now relaunches both instances when either has not logged
+  "CoopHarness: ready" within 60 s (up to 3 tries); test_suite.ps1 keeps both logs of a
+  failed scenario in `<workspace>\suite-failures\`.
+
+### Next
+- `baton-objects` ten times in a row to get the host crash with its logs.
+
+## Session 2 (cont.) — the host crash explained: merged versions name the sender's frames
+
+### Observed
+- `baton-objects` alone: host crash in 3 of the first 4 runs, then 1 of 4 (5 of 11 counting
+  the suite rounds). Always 0.01 s after the host received the client's batch holding the
+  new Engineer and the HQ.
+- The minidumps hold the process heap. With the name table (array of FNameEntry*, found from
+  a pointer to a known entry; entry = 8 bytes flags, int Index<<1, 8 bytes hash link, ANSI
+  chars) and the UObject layout of this build (Outer +0x40, Name +0x48, Class +0x50), the
+  UFunction pointers on the crashing thread's stack name the script stack:
+  XGGeoscape.Tick > UpdateUIVisualsOnly > XComStrategyMap.UpdateVisuals > UpdateMapItemVisuals
+  > UIStrategyMapItem.UpdateVisuals > UpdateFromGeoscapeEntity (on UIStrategyMapItem_Avenger_0)
+  > XComGameStateHistory.GetGameStateForObjectID. The crash was the main thread, not a worker.
+  Tools: `tools/mdmem.py`, `tools/md_uobj.py`, `tools/minidump_threads.py`, `tools/re_natives.py`
+  (exec function table: {"UClassexecName" string, function} pairs in data).
+- UpdateFromGeoscapeEntity looks the entity (the Avenger = XComHQ) up as of
+  `HistoryIndexOnLastUpdate`, an older frame, so the history walks back through versions.
+- XComGameState_BaseObject has `private int PreviousHistoryFrameIndex` ("linked list to the
+  history frame of the direct ancestor"). Logged on receipt: a merged version's parent is the
+  receiver's current frame, its previous version is "none" on one side, and calling
+  GetPreviousVersion on it crashed the host the same way (2 of 2 runs).
+- Frame counts at the crash: the client's batch went out at its current frame 231 (the HQ
+  changed in its last frames); the host's last frame was 229. In the SendGameState
+  experiment: client current 230, host last frame 228, crash again. The value of the private
+  field itself was not read (unknown); that it exceeds the host's last frame is inferred.
+- Experiment SendGameState + SubmitGameState of the received state on the receiver: the state
+  arrives with HistoryIndex -1 and not in the history; submitting it adds a frame, but the
+  versions still show no previous version, the receiver's ObjectID counter does not advance
+  (the client then created a second unit with the same ID 2327) and the host still crashed.
+  Dropped.
+
+### Derived
+- A merged object version keeps the sender's PreviousHistoryFrameIndex. The receiver applies
+  the merge into its current frame, and its frame count differs (merges add no frames; the
+  player without the baton makes local frames), so the index points at an unrelated frame
+  (lookup returns none or a wrong version) or past the end (empty slot: crash). This also
+  explains the client crashes in the save writer ("FWriteHistoryObjects"), which walks the
+  same links.
+
+### Fix
+- Harness `@walkback N`: looks up the HQ and crew as of each of the last N frames (what the
+  Avenger map item does).
+- First try: before each merge the sender sends "CoopAlign <its current frame>" and the
+  receiver submits empty frames ("Coop: align history") until that is its current frame, so
+  the merge lands in the sender's frame number. No crash in 3 runs, but both instances hung
+  (log stops; once in the receiver's `@walkback`, once 0.02 s after a merge): a version taken
+  from the sender's current frame names that frame as its previous one, and landing in the
+  same frame makes it name itself (derived: an endless walk).
+- Now: the sender sends its current frame + 1, the merge lands right after every frame its
+  versions can name, so a named frame is always earlier than the version's own frame and
+  never past the end. Commands are handled before a merge sent after them ("CoopAlign" logs
+  before "received merge state" in every run). `baton-objects` 6 of 6 PASS on 2026-10-25,
+  `@walkback 20` answered on both sides (found=529 and 543 lookups).
+- Not known: what a lookup returns when the named frame holds no version of the object (one
+  observation: GetPreviousVersion gave none), and whether saves written after merges load
+  back the same campaign (to test).
